@@ -179,3 +179,8 @@ MQTT_USE_TLS = False
 # Ubicación del archivo de certificado para conexión TLS con el bróker MQTT
 CA_CRT_FILE = "ssl/ca.crt"
 CA_CRT_PATH = os.path.join(os.path.dirname(__file__), CA_CRT_FILE)
+
+# Umbral de cambio porcentual para detectar cambios bruscos en las mediciones
+# Si el cambio entre el promedio reciente y el de referencia supera este porcentaje,
+# se envía una alerta al dispositivo IoT
+SUDDEN_CHANGE_THRESHOLD = 20  # Porcentaje ((20%)

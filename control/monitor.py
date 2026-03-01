@@ -197,7 +197,7 @@ def start_cron():
     
     print("Servicio de control iniciado")
     print("- Análisis de límites: cada 5 minutos")
-    print("- Detección de cambios bruscos: cada 10 minutos")
+    print("- Detección de cambios bruscos: cada 2 minutos")
     
     while 1:
         schedule.run_pending()

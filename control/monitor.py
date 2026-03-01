@@ -1,7 +1,8 @@
 from argparse import ArgumentError
 import ssl
 from django.db.models import Avg, Max, Min, Count
-from datetime import timedelta, datetime
+from datetime import timedelta
+from django.utils import timezone
 from receiver.models import Data, Measurement
 import paho.mqtt.client as mqtt
 import schedule
@@ -14,31 +15,45 @@ client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 def detect_sudden_changes():
     """Detecta cambios bruscos comparando el promedio reciente vs referencia."""
     threshold = getattr(settings, 'SUDDEN_CHANGE_THRESHOLD', 20)
-    now = datetime.now()
+    now = timezone.now()
+    two_min_ago = now - timedelta(minutes=2)
+    five_min_ago = now - timedelta(minutes=5)
 
-    def get_avg(start, end=None):
-        qs = Data.objects.filter(base_time__gte=start)
-        if end:
-            qs = qs.filter(base_time__lt=end)
+    # Fetch current and previous hour rows to handle window spanning hour boundary
+    current_base = now.replace(minute=0, second=0, microsecond=0)
+    prev_base = current_base - timedelta(hours=1)
+    rows = list(
+        Data.objects.filter(base_time__in=[prev_base, current_base])
+            .select_related('station__user',
+                            'station__location__city',
+                            'station__location__state',
+                            'station__location__country',
+                            'measurement')
+    )
+
+    def compute_avg(start, end):
+        """Average individual readings whose timestamp falls in [start, end)."""
+        groups = {}
+        for row in rows:
+            key = (row.station_id, row.measurement_id)
+            vals = [
+                v for v, t in zip(row.values, row.times)
+                if start <= row.base_time + timedelta(seconds=t) < end
+            ]
+            if vals:
+                entry = groups.setdefault(key, {'vals': [], 'row': row})
+                entry['vals'].extend(vals)
         return {
-            (r['station__id'], r['measurement__id']): r
-            for r in qs.annotate(avg=Avg('avg_value'))
-                       .select_related('station__user', 'station__location__city',
-                                       'station__location__state', 'station__location__country',
-                                       'measurement')
-                       .values('avg', 'station__id', 'measurement__id',
-                               'station__user__username', 'measurement__name',
-                               'station__location__city__name',
-                               'station__location__state__name',
-                               'station__location__country__name')
+            key: {'avg': sum(d['vals']) / len(d['vals']), 'row': d['row']}
+            for key, d in groups.items()
         }
 
-    recent = get_avg(now - timedelta(minutes=2))
-    reference = get_avg(now - timedelta(minutes=5), now - timedelta(minutes=4))
+    recent = compute_avg(two_min_ago, now)
+    reference = compute_avg(five_min_ago, two_min_ago)
 
     # Debug
-    print(f"Recent data count: {Data.objects.filter(base_time__gte=now - timedelta(minutes=2)).count()}")
-    print(f"Reference data count: {Data.objects.filter(base_time__gte=now - timedelta(minutes=5), base_time__lt=now - timedelta(minutes=4)).count()}")
+    print(f"Recent data count: {len(recent)}")
+    print(f"Reference data count: {len(reference)}")
     print(f"Recent dict: {recent}")
     print(f"Reference dict: {reference}")
 
@@ -52,16 +67,17 @@ def detect_sudden_changes():
         if change <= threshold:
             continue
 
+        row = ref['row']
         topic = '{}/{}/{}/{}/in'.format(
-            ref['station__location__country__name'],
-            ref['station__location__state__name'],
-            ref['station__location__city__name'],
-            ref['station__user__username']
+            row.station.location.country.name,
+            row.station.location.state.name,
+            row.station.location.city.name,
+            row.station.user.username,
         )
         message = "SUDDEN_CHANGE {} {:.2f} {:.2f} {:.1f}%".format(
-            ref['measurement__name'], ref['avg'], rec['avg'], change
+            row.measurement.name, ref['avg'], rec['avg'], change
         )
-        print(f"Cambio brusco detectado: {ref['measurement__name']} {ref['avg']:.2f} -> {rec['avg']:.2f} ({change:.1f}%)")
+        print(f"Cambio brusco detectado: {row.measurement.name} {ref['avg']:.2f} -> {rec['avg']:.2f} ({change:.1f}%)")
         client.publish(topic, message)
         sudden_changes += 1
 
@@ -71,7 +87,7 @@ def analyze_data():
     print("Calculando alertas...")
 
     data = Data.objects.filter(
-        base_time__gte=datetime.now() - timedelta(hours=1))
+        base_time__gte=timezone.now() - timedelta(hours=1))
     aggregation = data.annotate(check_value=Avg('avg_value')) \
         .select_related('station', 'measurement') \
         .select_related('station__user', 'station__location') \
@@ -103,7 +119,7 @@ def analyze_data():
         if alert:
             message = "ALERT {} {} {}".format(variable, min_value, max_value)
             topic = '{}/{}/{}/{}/in'.format(country, state, city, user)
-            print(datetime.now(), "Sending alert to {} {}".format(topic, variable))
+            print(timezone.now(), "Sending alert to {} {}".format(topic, variable))
             client.publish(topic, message)
             alerts += 1
 

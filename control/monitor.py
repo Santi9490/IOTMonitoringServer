@@ -193,7 +193,7 @@ def start_cron():
     schedule.every(5).minutes.do(analyze_data)
     
     # Ejecutar detect_sudden_changes cada 10 minutos (nuevo evento)
-    schedule.every(10).minutes.do(detect_sudden_changes)
+    schedule.every(2).minutes.do(detect_sudden_changes)
     
     print("Servicio de control iniciado")
     print("- Análisis de límites: cada 5 minutos")

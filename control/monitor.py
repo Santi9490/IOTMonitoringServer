@@ -12,96 +12,53 @@ from django.conf import settings
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 
 def detect_sudden_changes():
-    """
-    Nuevo evento: Detecta cambios bruscos en las mediciones.
-    
-    Condición: Compara el promedio de las mediciones de los últimos 30 minutos
-    con el promedio de las mediciones de las 2 horas anteriores.
-    Si la diferencia es mayor al umbral configurado (por ejemplo, 20%), 
-    se considera un cambio brusco.
-    
-    Acción: Envía un comando al dispositivo IoT para ejecutar una acción en el actuador
-    (por ejemplo, encender un LED, mostrar mensaje en pantalla, etc.)
-    """
-    print("Detectando cambios bruscos en las mediciones...")
-    
-    # Umbral de cambio porcentual que se considera "brusco"
-    # Se ajusta este valor en settings.py
-    threshold_percentage = getattr(settings, 'SUDDEN_CHANGE_THRESHOLD', 20)
-    
-    # Obtener datos de los últimos 30 minutos (periodo reciente)
-    recent_time = datetime.now() - timedelta(minutes=2)
-    recent_data = Data.objects.filter(base_time__gte=recent_time)
-    
-    # Obtener datos de las 2 horas anteriores (periodo de referencia)
-    reference_start = datetime.now() - timedelta(minutes=5)
-    reference_end = datetime.now() - timedelta(minutes=4)
-    reference_data = Data.objects.filter(
-        base_time__gte=reference_start,
-        base_time__lt=reference_end
-    )
-    
-    # Agrupar por estación y variable
-    recent_aggregation = recent_data.annotate(recent_avg=Avg('avg_value')) \
-        .select_related('station', 'measurement') \
-        .select_related('station__user', 'station__location') \
-        .select_related('station__location__city', 'station__location__state',
-                        'station__location__country') \
-        .values('recent_avg', 'station__id', 'measurement__id',
-                'station__user__username',
-                'measurement__name',
-                'station__location__city__name',
-                'station__location__state__name',
-                'station__location__country__name')
-    
-    # Crear diccionario para búsqueda rápida de datos recientes
-    recent_dict = {}
-    for item in recent_aggregation:
-        key = (item['station__id'], item['measurement__id'])
-        recent_dict[key] = item
-    
-    # Comparar con datos de referencia
-    reference_aggregation = reference_data.annotate(reference_avg=Avg('avg_value')) \
-        .values('reference_avg', 'station__id', 'measurement__id')
-    
+    """Detecta cambios bruscos comparando el promedio reciente vs referencia."""
+    threshold = getattr(settings, 'SUDDEN_CHANGE_THRESHOLD', 20)
+    now = datetime.now()
+
+    def get_avg(start, end=None):
+        qs = Data.objects.filter(base_time__gte=start)
+        if end:
+            qs = qs.filter(base_time__lt=end)
+        return {
+            (r['station__id'], r['measurement__id']): r
+            for r in qs.annotate(avg=Avg('avg_value'))
+                       .select_related('station__user', 'station__location__city',
+                                       'station__location__state', 'station__location__country',
+                                       'measurement')
+                       .values('avg', 'station__id', 'measurement__id',
+                               'station__user__username', 'measurement__name',
+                               'station__location__city__name',
+                               'station__location__state__name',
+                               'station__location__country__name')
+        }
+
+    recent = get_avg(now - timedelta(minutes=2))
+    reference = get_avg(now - timedelta(minutes=5), now - timedelta(minutes=4))
+
     sudden_changes = 0
-    for ref_item in reference_aggregation:
-        key = (ref_item['station__id'], ref_item['measurement__id'])
-        
-        if key in recent_dict:
-            recent_item = recent_dict[key]
-            recent_avg = recent_item['recent_avg']
-            reference_avg = ref_item['reference_avg']
-            
-            # Evitar división por cero
-            if reference_avg != 0:
-                # Calcular cambio porcentual
-                percentage_change = abs(
-                    ((recent_avg - reference_avg) / reference_avg) * 100
-                )
-                
-                # Si el cambio supera el umbral, enviar alerta
-                if percentage_change > threshold_percentage:
-                    variable = recent_item['measurement__name']
-                    country = recent_item['station__location__country__name']
-                    state = recent_item['station__location__state__name']
-                    city = recent_item['station__location__city__name']
-                    user = recent_item['station__user__username']
-                    
-                    # Formato del mensaje: SUDDEN_CHANGE <variable> <valor_referencia> <valor_actual> <cambio%>
-                    message = "SUDDEN_CHANGE {} {:.2f} {:.2f} {:.1f}%".format(
-                        variable, reference_avg, recent_avg, percentage_change
-                    )
-                    topic = '{}/{}/{}/{}/in'.format(country, state, city, user)
-                    
-                    print(datetime.now(), "Cambio brusco detectado en {} para {}: {:.1f}%".format(
-                        user, variable, percentage_change))
-                    print(datetime.now(), "Enviando comando a {}".format(topic))
-                    
-                    client.publish(topic, message)
-                    sudden_changes += 1
-    
-    print("{} cambios bruscos detectados".format(sudden_changes))
+    for key, ref in reference.items():
+        rec = recent.get(key)
+        if not rec or ref['avg'] == 0:
+            continue
+
+        change = abs((rec['avg'] - ref['avg']) / ref['avg'] * 100)
+        if change <= threshold:
+            continue
+
+        topic = '{}/{}/{}/{}/in'.format(
+            ref['station__location__country__name'],
+            ref['station__location__state__name'],
+            ref['station__location__city__name'],
+            ref['station__user__username']
+        )
+        message = "SUDDEN_CHANGE {} {:.2f} {:.2f} {:.1f}%".format(
+            ref['measurement__name'], ref['avg'], rec['avg'], change
+        )
+        client.publish(topic, message)
+        sudden_changes += 1
+
+    print(f"{sudden_changes} cambios bruscos detectados")
 
 def analyze_data():
     print("Calculando alertas...")

@@ -30,12 +30,12 @@ def detect_sudden_changes():
     threshold_percentage = getattr(settings, 'SUDDEN_CHANGE_THRESHOLD', 20)
     
     # Obtener datos de los últimos 30 minutos (periodo reciente)
-    recent_time = datetime.now() - timedelta(minutes=30)
+    recent_time = datetime.now() - timedelta(minutes=2)
     recent_data = Data.objects.filter(base_time__gte=recent_time)
     
     # Obtener datos de las 2 horas anteriores (periodo de referencia)
-    reference_start = datetime.now() - timedelta(hours=2, minutes=30)
-    reference_end = datetime.now() - timedelta(minutes=30)
+    reference_start = datetime.now() - timedelta(minutes=5)
+    reference_end = datetime.now() - timedelta(minutes=4)
     reference_data = Data.objects.filter(
         base_time__gte=reference_start,
         base_time__lt=reference_end

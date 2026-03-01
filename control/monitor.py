@@ -8,8 +8,8 @@ import schedule
 import time
 from django.conf import settings
 
-client = mqtt.Client(settings.MQTT_USER_PUB)
-
+# Initialized without connecting — setup_mqtt() handles the full setup
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 
 def detect_sudden_changes():
     """
@@ -103,12 +103,7 @@ def detect_sudden_changes():
     
     print("{} cambios bruscos detectados".format(sudden_changes))
 
-
 def analyze_data():
-    # Consulta todos los datos de la última hora, los agrupa por estación y variable
-    # Compara el promedio con los valores límite que están en la base de datos para esa variable.
-    # Si el promedio se excede de los límites, se envia un mensaje de alerta.
-
     print("Calculando alertas...")
 
     data = Data.objects.filter(
@@ -152,32 +147,26 @@ def analyze_data():
     print(alerts, "alertas enviadas")
 
 
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties=None):
     '''
     Función que se ejecuta cuando se conecta al bróker.
     '''
     print("Conectando al broker MQTT...", mqtt.connack_string(rc))
 
-
-def on_disconnect(client: mqtt.Client, userdata, rc):
-    '''
-    Función que se ejecuta cuando se desconecta del broker.
-    Intenta reconectar al bróker.
-    '''
+def on_disconnect(client: mqtt.Client, userdata, flags, rc, properties=None):
     print("Desconectado con mensaje:" + str(mqtt.connack_string(rc)))
     print("Reconectando...")
     client.reconnect()
-
 
 def setup_mqtt():
     '''
     Configura el cliente MQTT para conectarse al broker.
     '''
-
     print("Iniciando cliente MQTT...", settings.MQTT_HOST, settings.MQTT_PORT)
     global client
     try:
-        client = mqtt.Client(settings.MQTT_USER_PUB)
+        # Use VERSION2 API and pass client_id separately from credentials
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=settings.MQTT_USER_PUB)
         client.on_connect = on_connect
         client.on_disconnect = on_disconnect
 
@@ -185,8 +174,7 @@ def setup_mqtt():
             client.tls_set(ca_certs=settings.CA_CRT_PATH,
                            tls_version=ssl.PROTOCOL_TLSv1_2, cert_reqs=ssl.CERT_NONE)
 
-        client.username_pw_set(settings.MQTT_USER_PUB,
-                               settings.MQTT_PASSWORD_PUB)
+        client.username_pw_set(settings.MQTT_USER_PUB, settings.MQTT_PASSWORD_PUB)
         client.connect(settings.MQTT_HOST, settings.MQTT_PORT)
 
     except Exception as e:
@@ -195,7 +183,7 @@ def setup_mqtt():
 
 def start_cron():
     '''
-    Inicia el cron que se encarga de ejecutar las funciones de procesamiento de eventos.
+    Inicia el cron que se encarga de ejecutar la función analyze_data cada 5 minutos.
     - analyze_data: Verifica si las mediciones están fuera de los límites establecidos
     - detect_sudden_changes: Detecta cambios bruscos en las mediciones
     '''

@@ -36,10 +36,16 @@ def detect_sudden_changes():
     recent = get_avg(now - timedelta(minutes=2))
     reference = get_avg(now - timedelta(minutes=5), now - timedelta(minutes=4))
 
+    # Debug
+    print(f"Recent data count: {Data.objects.filter(base_time__gte=now - timedelta(minutes=2)).count()}")
+    print(f"Reference data count: {Data.objects.filter(base_time__gte=now - timedelta(minutes=5), base_time__lt=now - timedelta(minutes=4)).count()}")
+    print(f"Recent dict: {recent}")
+    print(f"Reference dict: {reference}")
+
     sudden_changes = 0
     for key, ref in reference.items():
         rec = recent.get(key)
-        if not rec or ref['avg'] == 0:
+        if not rec or ref['avg'] == 0 or rec['avg'] is None:
             continue
 
         change = abs((rec['avg'] - ref['avg']) / ref['avg'] * 100)
@@ -55,6 +61,7 @@ def detect_sudden_changes():
         message = "SUDDEN_CHANGE {} {:.2f} {:.2f} {:.1f}%".format(
             ref['measurement__name'], ref['avg'], rec['avg'], change
         )
+        print(f"Cambio brusco detectado: {ref['measurement__name']} {ref['avg']:.2f} -> {rec['avg']:.2f} ({change:.1f}%)")
         client.publish(topic, message)
         sudden_changes += 1
 
